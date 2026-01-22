@@ -1,0 +1,145 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MeshAid | Tactical Disaster Response</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700;800&family=Bebas+Neue&family=Space+Grotesk:wght@300;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-tactical: #040508;
+      --bg-tactical-surface: #0a0c12;
+      --accent-sos: #ff2e2e;
+      --accent-medical: #3b82f6;
+      --accent-resource: #00f5a0;
+      --accent-alert: #fb923c;
+      --accent-info: #6366f1;
+      --gradient-primary: linear-gradient(135deg, #00f5a0 0%, #00d9ff 100%);
+      --glass-border: rgba(255, 255, 255, 0.08);
+      --glass-bg: rgba(15, 20, 30, 0.6);
+    }
+
+    body {
+      background-color: var(--bg-tactical);
+      color: #f0f2f5;
+      font-family: 'Space Grotesk', sans-serif;
+      margin: 0;
+      overflow: hidden;
+      letter-spacing: -0.01em;
+    }
+
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    .heading { font-family: 'Bebas Neue', cursive; letter-spacing: 0.08em; }
+    
+    .text-gradient {
+      background: var(--gradient-primary);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    /* Tactical Background Elements */
+    .bg-grid {
+      background-image: 
+        linear-gradient(rgba(0, 245, 160, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 245, 160, 0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      position: relative;
+    }
+
+    .bg-grid::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+      z-index: 100;
+      background-size: 100% 2px, 3px 100%;
+      pointer-events: none;
+      opacity: 0.15;
+    }
+
+    /* Improved Glass UI */
+    .glass-panel {
+      background: var(--glass-bg);
+      backdrop-filter: blur(20px) saturate(180%);
+      border: 1px solid var(--glass-border);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.8);
+    }
+
+    .glass-card {
+      background: rgba(255, 255, 255, 0.02);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .glass-card:hover {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(255, 255, 255, 0.15);
+      transform: translateY(-2px);
+    }
+
+    /* Neon Accents */
+    .glow-sos { box-shadow: 0 0 30px rgba(255, 46, 46, 0.15); border: 1px solid rgba(255, 46, 46, 0.3); }
+    .glow-medical { box-shadow: 0 0 30px rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); }
+    .glow-resource { box-shadow: 0 0 30px rgba(0, 245, 160, 0.15); border: 1px solid rgba(0, 245, 160, 0.3); }
+
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(0, 245, 160, 0.2); border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(0, 245, 160, 0.4); }
+
+    @keyframes pulse-red {
+      0%, 100% { box-shadow: 0 0 10px rgba(255, 46, 46, 0.2); border-color: rgba(255, 46, 46, 0.4); }
+      50% { box-shadow: 0 0 30px rgba(255, 46, 46, 0.5); border-color: rgba(255, 46, 46, 0.8); }
+    }
+    .animate-pulse-sos { animation: pulse-red 2s infinite ease-in-out; }
+
+    .tactical-border {
+      position: relative;
+    }
+    .tactical-border::before, .tactical-border::after {
+      content: "";
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      border-color: rgba(255,255,255,0.3);
+      pointer-events: none;
+    }
+    .tactical-border::before { top: 0; left: 0; border-top: 1px solid; border-left: 1px solid; }
+    .tactical-border::after { bottom: 0; right: 0; border-bottom: 1px solid; border-right: 1px solid; }
+
+    @keyframes scanner {
+      0% { top: -10%; }
+      100% { top: 110%; }
+    }
+    .scan-line {
+      position: absolute;
+      height: 5px;
+      width: 100%;
+      background: linear-gradient(to bottom, transparent, rgba(0, 245, 160, 0.1), transparent);
+      animation: scanner 8s linear infinite;
+      z-index: 10;
+      pointer-events: none;
+    }
+  </style>
+<script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="bg-grid">
+  <div id="root"></div>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>

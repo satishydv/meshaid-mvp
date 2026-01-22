@@ -1,0 +1,7 @@
+{
+  "name": "MeshAid: Tactical Offline Emergency Network",
+  "description": "A high-priority, peer-to-peer emergency communication platform designed for disaster recovery and offline coordination.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
