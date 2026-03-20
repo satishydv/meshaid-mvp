@@ -396,7 +396,7 @@ const App: React.FC = () => {
           <div className="fixed md:absolute left-0 right-0 px-3 sm:px-4 md:px-6 lg:px-12 z-50 transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] bottom-3 sm:bottom-4 md:bottom-6 lg:bottom-10">
             <div className={`max-w-5xl mx-auto glass-panel compose-panel rounded-2xl sm:rounded-3xl border-white/10 shadow-[0_60px_150px_-30px_rgba(0,0,0,1)] relative overflow-hidden flex flex-col ${isLightTheme ? 'max-h-[40vh] sm:max-h-[38vh] p-3 sm:p-4 md:p-4' : 'max-h-[50vh] sm:max-h-[45vh] p-4 sm:p-5 md:p-6'}`}>
               <div
-                className="absolute inset-0 pointer-events-none transition-all duration-1000 opacity-[0.15]"
+                className={`absolute inset-0 pointer-events-none transition-all duration-1000 ${isLightTheme ? 'opacity-[0.05]' : 'opacity-[0.15]'}`}
                 style={{ background: `radial-gradient(circle at 50% 120%, ${currentConfig.color}, transparent 70%)` }}
               ></div>
 
