@@ -105,11 +105,6 @@ const App: React.FC = () => {
     }, 150);
   }, [inputText, selectedType, myLocation, manualLocation]);
 
-  const handleQuickSOS = useCallback(() => {
-    meshService.sendMessage(MessageType.SOS, "IMMEDIATE ASSISTANCE REQUIRED AT MY LOCATION", myLocation);
-    setIsSidebarOpen(false);
-  }, [myLocation]);
-
   const sortedMessages = useMemo(() => {
     return [...messages].sort((a, b) => {
       if (a.type === MessageType.SOS && b.type !== MessageType.SOS) return -1;
@@ -301,14 +296,6 @@ const App: React.FC = () => {
             </div>
           </section>
 
-          {/* SOS Persistent Action */}
-          <section className="pt-6 sm:pt-8 md:pt-10 sticky bottom-0 sidebar-fade pb-4 sm:pb-5 md:pb-6 mt-6 sm:mt-8 md:mt-10 z-20">
-            <button onClick={handleQuickSOS} className="w-full py-4 sm:py-5 md:py-6 bg-transparent border-2 border-red-500/40 rounded-xl sm:rounded-2xl md:rounded-[2.5rem] text-red-500 heading text-2xl sm:text-3xl md:text-4xl flex items-center justify-center gap-3 sm:gap-4 md:gap-5 shadow-2xl shadow-red-500/20 group overflow-hidden active:scale-95 relative">
-              <div className="absolute inset-0 bg-red-500 translate-y-full group-hover:translate-y-0 transition-transform duration-500"></div>
-              <svg className="w-7 h-7 sm:w-8 sm:h-8 md:w-10 md:h-10 fill-current relative z-10 group-hover:animate-bounce group-hover:fill-black transition-colors" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-              <span className="relative z-10 tracking-wider sm:tracking-widest group-hover:text-black transition-colors">BROADCAST SOS</span>
-            </button>
-          </section>
         </div>
       </aside>
 
