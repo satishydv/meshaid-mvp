@@ -99,7 +99,7 @@ class MeshService {
 
   public sendMessage(type: MessageType, text: string, location?: GeoLocation, manualLocation?: string) {
     const msg: MeshMessage = {
-      id: crypto.randomUUID(),
+      id: this.createMessageId(),
       type,
       sender: this.myNickname || 'Unknown Unit',
       senderId: this.myPeerId,
@@ -435,6 +435,20 @@ class MeshService {
       default:
         return 1;
     }
+  }
+
+  private createMessageId() {
+    try {
+      if (
+        typeof crypto !== 'undefined' &&
+        typeof crypto.randomUUID === 'function'
+      ) {
+        return crypto.randomUUID();
+      }
+    } catch {
+      // Fall back to non-crypto id generation below.
+    }
+    return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }
 }
 

@@ -98,10 +98,15 @@ const App: React.FC = () => {
     if (!inputText.trim()) return;
     setIsSending(true);
     setTimeout(() => {
-      meshService.sendMessage(selectedType, inputText, myLocation, manualLocation);
-      setInputText('');
-      setManualLocation('');
-      setIsSending(false);
+      try {
+        meshService.sendMessage(selectedType, inputText, myLocation, manualLocation);
+        setInputText('');
+        setManualLocation('');
+      } catch (error) {
+        console.error('Failed to send message:', error);
+      } finally {
+        setIsSending(false);
+      }
     }, 150);
   }, [inputText, selectedType, myLocation, manualLocation]);
 
