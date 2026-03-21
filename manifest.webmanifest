@@ -1,0 +1,9 @@
+{
+  "name": "MeshAid Tactical Network",
+  "short_name": "MeshAid",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#040508",
+  "theme_color": "#00f5a0",
+  "description": "Offline-first tactical emergency mesh messaging app."
+}
