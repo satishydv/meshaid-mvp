@@ -18,10 +18,18 @@ const NEARBY_FACILITIES = [
   { name: 'NORTH PLAZA SUPPLY', type: 'RESOURCES', dist: '2.8km', status: 'ACTIVE' },
 ];
 
+type AppMode = 'demo' | 'live';
+const MODE_STORAGE_KEY = 'meshaid_mode';
+const MESSAGE_HISTORY_KEY = 'meshaid_msg_history';
+
 const App: React.FC = () => {
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const storedTheme = localStorage.getItem('meshaid_theme');
     return storedTheme === 'light' ? 'light' : 'dark';
+  });
+  const [appMode, setAppMode] = useState<AppMode>(() => {
+    const storedMode = localStorage.getItem(MODE_STORAGE_KEY);
+    return storedMode === 'live' ? 'live' : 'demo';
   });
   const [messages, setMessages] = useState<MeshMessage[]>([]);
   const [peers, setPeers] = useState<Peer[]>([]);
@@ -34,8 +42,33 @@ const App: React.FC = () => {
   const [isSending, setIsSending] = useState(false);
   const [isComposerOpen, setIsComposerOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   
   const scrollRef = useRef<HTMLDivElement>(null);
+  const modeMenuRef = useRef<HTMLDivElement>(null);
+
+  const isDummyMessage = useCallback((msg: MeshMessage) => msg.id.startsWith('dummy-'), []);
+
+  const loadStoredMessages = useCallback((): MeshMessage[] => {
+    const storedMessages = localStorage.getItem(MESSAGE_HISTORY_KEY);
+    if (!storedMessages) return [];
+    try {
+      const parsed = JSON.parse(storedMessages) as MeshMessage[];
+      return parsed.filter((msg) => !msg.id.startsWith('dummy-'));
+    } catch (e) {
+      return [];
+    }
+  }, []);
+
+  const getModeSeedMessages = useCallback((mode: AppMode): MeshMessage[] => {
+    const storedRealMessages = loadStoredMessages();
+    if (mode === 'live') {
+      return storedRealMessages;
+    }
+    const dedupe = new Set(storedRealMessages.map((msg) => msg.id));
+    const demoOnlyMessages = (DUMMY_MESSAGES as MeshMessage[]).filter((msg) => !dedupe.has(msg.id));
+    return [...demoOnlyMessages, ...storedRealMessages];
+  }, [loadStoredMessages]);
 
   useEffect(() => {
     const storedNickname = localStorage.getItem('meshaid_nick');
@@ -45,23 +78,38 @@ const App: React.FC = () => {
       const randomNick = MOCK_NICKNAMES[Math.floor(Math.random() * MOCK_NICKNAMES.length)] + '-' + Math.floor(Math.random() * 999);
       setNickname(randomNick);
     }
-
-    const storedMessages = localStorage.getItem('meshaid_msg_history');
-    if (storedMessages) {
-      try {
-        setMessages(JSON.parse(storedMessages));
-      } catch (e) { 
-        setMessages(DUMMY_MESSAGES as MeshMessage[]);
-      }
-    } else {
-      setMessages(DUMMY_MESSAGES as MeshMessage[]);
-    }
   }, []);
+
+  useEffect(() => {
+    setMessages(getModeSeedMessages(appMode));
+    localStorage.setItem(MODE_STORAGE_KEY, appMode);
+  }, [appMode, getModeSeedMessages]);
 
   useEffect(() => {
     document.body.classList.toggle('theme-light', theme === 'light');
     localStorage.setItem('meshaid_theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    const handlePointerDown = (event: MouseEvent) => {
+      if (modeMenuRef.current && !modeMenuRef.current.contains(event.target as Node)) {
+        setIsModeMenuOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsModeMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, []);
 
   useEffect(() => {
     if (isInitialized) {
@@ -70,8 +118,10 @@ const App: React.FC = () => {
       
       const unsubscribeMessages = meshService.onMessage((msg) => {
         setMessages(prev => {
-          const newMsgs = [msg, ...prev].slice(0, 100);
-          localStorage.setItem('meshaid_msg_history', JSON.stringify(newMsgs));
+          const dedupedPrev = prev.filter((existing) => existing.id !== msg.id);
+          const newMsgs = [msg, ...dedupedPrev].slice(0, 100);
+          const persistable = newMsgs.filter((item) => !isDummyMessage(item));
+          localStorage.setItem(MESSAGE_HISTORY_KEY, JSON.stringify(persistable));
           return newMsgs;
         });
       });
@@ -92,7 +142,7 @@ const App: React.FC = () => {
         unsubscribePeers();
       };
     }
-  }, [isInitialized, nickname]);
+  }, [isInitialized, nickname, isDummyMessage]);
 
   const handleSend = useCallback(() => {
     if (!inputText.trim()) return;
@@ -254,52 +304,77 @@ const App: React.FC = () => {
             </div>
           </section>
 
-          {/* Vitals Feed */}
-          <section className="space-y-3 sm:space-y-4">
-            <div className="flex items-center justify-between px-1">
-              <span className="mono text-[8px] sm:text-[9px] md:text-[10px] text-white/40 uppercase font-black tracking-widest">Sector_Telemetry</span>
-              <span className="mono text-[8px] sm:text-[9px] text-white/20 font-bold uppercase">Grid_S04</span>
-            </div>
-            <div className="bg-white/[0.02] border border-white/5 rounded-xl sm:rounded-2xl md:rounded-[2.5rem] p-3 sm:p-4 md:p-6 space-y-4 sm:space-y-5 md:space-y-6 tactical-border">
-              {SECTOR_VITALS.map((vital, idx) => (
-                <div key={idx} className="space-y-2 sm:space-y-3">
-                  <div className="flex justify-between items-center mono text-[9px] sm:text-[10px] md:text-[11px]">
-                    <span className="text-white/70 font-black tracking-tight uppercase truncate pr-2">{vital.label}</span>
-                    <span style={{ color: vital.color }} className="font-black text-[8px] sm:text-[9px] md:text-[10px] tracking-widest shrink-0">{vital.status}</span>
-                  </div>
-                  <div className="h-1.5 sm:h-2 w-full bg-white/5 rounded-full overflow-hidden p-[1px]">
-                    <div className="h-full rounded-full transition-all duration-1000 shadow-[0_0_15px_currentColor]" style={{ width: `${vital.value}%`, backgroundColor: vital.color }}></div>
-                  </div>
+          {appMode === 'demo' ? (
+            <>
+              {/* Vitals Feed */}
+              <section className="space-y-3 sm:space-y-4">
+                <div className="flex items-center justify-between px-1">
+                  <span className="mono text-[8px] sm:text-[9px] md:text-[10px] text-white/40 uppercase font-black tracking-widest">Sector_Telemetry</span>
+                  <span className="mono text-[8px] sm:text-[9px] text-white/20 font-bold uppercase">Grid_S04</span>
                 </div>
-              ))}
-            </div>
-          </section>
+                <div className="bg-white/[0.02] border border-white/5 rounded-xl sm:rounded-2xl md:rounded-[2.5rem] p-3 sm:p-4 md:p-6 space-y-4 sm:space-y-5 md:space-y-6 tactical-border">
+                  {SECTOR_VITALS.map((vital, idx) => (
+                    <div key={idx} className="space-y-2 sm:space-y-3">
+                      <div className="flex justify-between items-center mono text-[9px] sm:text-[10px] md:text-[11px]">
+                        <span className="text-white/70 font-black tracking-tight uppercase truncate pr-2">{vital.label}</span>
+                        <span style={{ color: vital.color }} className="font-black text-[8px] sm:text-[9px] md:text-[10px] tracking-widest shrink-0">{vital.status}</span>
+                      </div>
+                      <div className="h-1.5 sm:h-2 w-full bg-white/5 rounded-full overflow-hidden p-[1px]">
+                        <div className="h-full rounded-full transition-all duration-1000 shadow-[0_0_15px_currentColor]" style={{ width: `${vital.value}%`, backgroundColor: vital.color }}></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
 
-          {/* Infrastructure */}
-          <section className="space-y-3 sm:space-y-4">
-            <div className="flex items-center justify-between px-1">
-              <span className="mono text-[8px] sm:text-[9px] md:text-[10px] text-white/40 uppercase font-black tracking-widest">Facility_Manifest</span>
-            </div>
-            <div className="space-y-2 sm:space-y-3">
-              {NEARBY_FACILITIES.map((fac, idx) => (
-                <div key={idx} className="group p-3 sm:p-4 bg-white/[0.02] border border-white/5 rounded-xl sm:rounded-2xl flex items-center justify-between hover:bg-white/5 transition-all cursor-default">
-                  <div className="flex items-center gap-2 sm:gap-3 md:gap-4 min-w-0 flex-1">
-                    <div className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 bg-white/5 rounded-lg sm:rounded-xl flex items-center justify-center mono text-[10px] sm:text-xs text-white/40 font-black shrink-0">
-                      {fac.type[0]}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="mono text-[8px] sm:text-[9px] text-white/20 uppercase font-black mb-0.5 sm:mb-1">{fac.type}</div>
-                      <div className="mono text-[10px] sm:text-xs text-white font-black tracking-tight truncate">{fac.name}</div>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0 ml-2">
-                    <div className="mono text-[9px] sm:text-[10px] text-white/40 font-bold mb-0.5 sm:mb-1">{fac.dist}</div>
-                    <div className={`mono text-[8px] sm:text-[9px] font-black tracking-widest ${fac.status === 'ACTIVE' ? 'text-[#00f5a0]' : 'text-red-500'}`}>{fac.status}</div>
-                  </div>
+              {/* Infrastructure */}
+              <section className="space-y-3 sm:space-y-4">
+                <div className="flex items-center justify-between px-1">
+                  <span className="mono text-[8px] sm:text-[9px] md:text-[10px] text-white/40 uppercase font-black tracking-widest">Facility_Manifest</span>
                 </div>
-              ))}
-            </div>
-          </section>
+                <div className="space-y-2 sm:space-y-3">
+                  {NEARBY_FACILITIES.map((fac, idx) => (
+                    <div key={idx} className="group p-3 sm:p-4 bg-white/[0.02] border border-white/5 rounded-xl sm:rounded-2xl flex items-center justify-between hover:bg-white/5 transition-all cursor-default">
+                      <div className="flex items-center gap-2 sm:gap-3 md:gap-4 min-w-0 flex-1">
+                        <div className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 bg-white/5 rounded-lg sm:rounded-xl flex items-center justify-center mono text-[10px] sm:text-xs text-white/40 font-black shrink-0">
+                          {fac.type[0]}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="mono text-[8px] sm:text-[9px] text-white/20 uppercase font-black mb-0.5 sm:mb-1">{fac.type}</div>
+                          <div className="mono text-[10px] sm:text-xs text-white font-black tracking-tight truncate">{fac.name}</div>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0 ml-2">
+                        <div className="mono text-[9px] sm:text-[10px] text-white/40 font-bold mb-0.5 sm:mb-1">{fac.dist}</div>
+                        <div className={`mono text-[8px] sm:text-[9px] font-black tracking-widest ${fac.status === 'ACTIVE' ? 'text-[#00f5a0]' : 'text-red-500'}`}>{fac.status}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </>
+          ) : (
+            <section className="space-y-3 sm:space-y-4">
+              <div className="flex items-center justify-between px-1">
+                <span className="mono text-[8px] sm:text-[9px] md:text-[10px] text-white/40 uppercase font-black tracking-widest">Live_Operations</span>
+                <span className="mono text-[8px] sm:text-[9px] text-[#00f5a0] font-bold uppercase">Realtime</span>
+              </div>
+              <div className="bg-white/[0.02] border border-white/5 rounded-xl sm:rounded-2xl md:rounded-[2.5rem] p-4 sm:p-5 md:p-6 space-y-3 sm:space-y-4">
+                <div className="flex items-center justify-between mono text-[10px] sm:text-[11px] uppercase">
+                  <span className="text-white/40 font-black">Total_Messages</span>
+                  <span className="text-white font-black">{messages.length}</span>
+                </div>
+                <div className="flex items-center justify-between mono text-[10px] sm:text-[11px] uppercase">
+                  <span className="text-white/40 font-black">Active_Alerts</span>
+                  <span className={`font-black ${activeSOSCount > 0 ? 'text-red-500' : 'text-white'}`}>{activeSOSCount}</span>
+                </div>
+                <div className="flex items-center justify-between mono text-[10px] sm:text-[11px] uppercase">
+                  <span className="text-white/40 font-black">Online_Peers</span>
+                  <span className="text-blue-400 font-black">{onlinePeersCount}</span>
+                </div>
+              </div>
+            </section>
+          )}
 
         </div>
       </aside>
@@ -346,8 +421,48 @@ const App: React.FC = () => {
                    <span className="mono text-[10px] sm:text-xs md:text-sm text-white/90 font-black uppercase tracking-[0.15em] sm:tracking-[0.2em] hidden md:inline">{myLocation ? 'GPS_LOCKED' : 'GPS_SEARCHING'}</span>
                 </div>
              </div>
-             <div className="w-10 h-10 sm:w-12 sm:h-12 md:w-14 md:h-14 rounded-xl sm:rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center hover:bg-[#00f5a0]/10 transition-all group cursor-pointer shrink-0">
-                <svg className="w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8 fill-white/40 group-hover:fill-[#00f5a0] transition-colors" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+             <div className="hidden md:flex items-center">
+               <span className={`mono text-[10px] uppercase font-black tracking-[0.2em] ${appMode === 'demo' ? 'text-amber-400/80' : 'text-[#00f5a0]'}`}>
+                 {appMode === 'demo' ? 'MODE_DEMO' : 'MODE_LIVE'}
+               </span>
+             </div>
+             <div className="relative" ref={modeMenuRef}>
+               <button
+                 type="button"
+                 onClick={() => setIsModeMenuOpen((prev) => !prev)}
+                 className="w-10 h-10 sm:w-12 sm:h-12 md:w-14 md:h-14 rounded-xl sm:rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center hover:bg-[#00f5a0]/10 transition-all group cursor-pointer shrink-0"
+                 aria-label="Open mode menu"
+                 aria-haspopup="menu"
+                 aria-expanded={isModeMenuOpen}
+               >
+                  <svg className="w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8 fill-white/40 group-hover:fill-[#00f5a0] transition-colors" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+               </button>
+               {isModeMenuOpen && (
+                 <div className="absolute right-0 mt-2 w-44 bg-[#0b111a]/95 border border-white/10 rounded-xl p-1.5 shadow-2xl z-[80]" role="menu">
+                   <button
+                     type="button"
+                     onClick={() => {
+                       setAppMode('demo');
+                       setIsModeMenuOpen(false);
+                     }}
+                     className={`w-full text-left px-3 py-2.5 rounded-lg mono text-[11px] font-black uppercase tracking-[0.12em] transition-all ${appMode === 'demo' ? 'bg-amber-400/20 text-amber-300' : 'text-white/70 hover:bg-white/10 hover:text-white'}`}
+                     role="menuitem"
+                   >
+                     Demo Mode
+                   </button>
+                   <button
+                     type="button"
+                     onClick={() => {
+                       setAppMode('live');
+                       setIsModeMenuOpen(false);
+                     }}
+                     className={`w-full text-left px-3 py-2.5 rounded-lg mono text-[11px] font-black uppercase tracking-[0.12em] transition-all ${appMode === 'live' ? 'bg-[#00f5a0]/20 text-[#00f5a0]' : 'text-white/70 hover:bg-white/10 hover:text-white'}`}
+                     role="menuitem"
+                   >
+                     Live Mode
+                   </button>
+                 </div>
+               )}
              </div>
           </div>
         </header>
