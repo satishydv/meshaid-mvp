@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { meshService } from './services/meshService';
-import { MeshMessage, MessageType, Peer, GeoLocation } from './types';
+import { MeshMessage, MessageType, Peer, GeoLocation, MessageChannel } from './types';
 import { MESSAGE_CONFIG, MOCK_NICKNAMES, DUMMY_MESSAGES } from './constants';
 import { MessageItem } from './components/MessageItem';
 
@@ -21,6 +21,20 @@ const NEARBY_FACILITIES = [
 type AppMode = 'demo' | 'live';
 const MODE_STORAGE_KEY = 'meshaid_mode';
 const MESSAGE_HISTORY_KEY = 'meshaid_msg_history';
+const CHANNEL_STORAGE_KEY = 'meshaid_active_channel';
+
+type ChannelMeta = {
+  id: MessageChannel;
+  label: string;
+  chip: string;
+};
+
+const CHANNELS: ChannelMeta[] = [
+  { id: MessageChannel.GENERAL, label: 'PUBLIC BROADCAST', chip: 'GENERAL' },
+  { id: MessageChannel.MEDICAL, label: 'MEDICAL ASSIST', chip: 'MEDICAL' },
+  { id: MessageChannel.LOGISTICS, label: 'RESOURCE HUB', chip: 'LOGISTICS' },
+  { id: MessageChannel.EVACUATION, label: 'EVACUATION GRID', chip: 'EVAC' },
+];
 
 const App: React.FC = () => {
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -43,22 +57,40 @@ const App: React.FC = () => {
   const [isComposerOpen, setIsComposerOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
+  const [activeChannel, setActiveChannel] = useState<MessageChannel>(() => {
+    const stored = localStorage.getItem(CHANNEL_STORAGE_KEY) as MessageChannel | null;
+    if (stored && Object.values(MessageChannel).includes(stored)) {
+      return stored;
+    }
+    return MessageChannel.GENERAL;
+  });
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const modeMenuRef = useRef<HTMLDivElement>(null);
 
   const isDummyMessage = useCallback((msg: MeshMessage) => msg.id.startsWith('dummy-'), []);
+  const normalizeMessageChannel = useCallback((msg: MeshMessage): MeshMessage => {
+    if (msg.channel && Object.values(MessageChannel).includes(msg.channel)) {
+      return msg;
+    }
+    return {
+      ...msg,
+      channel: MessageChannel.GENERAL,
+    };
+  }, []);
 
   const loadStoredMessages = useCallback((): MeshMessage[] => {
     const storedMessages = localStorage.getItem(MESSAGE_HISTORY_KEY);
     if (!storedMessages) return [];
     try {
       const parsed = JSON.parse(storedMessages) as MeshMessage[];
-      return parsed.filter((msg) => !msg.id.startsWith('dummy-'));
+      return parsed
+        .map((msg) => normalizeMessageChannel(msg))
+        .filter((msg) => !msg.id.startsWith('dummy-'));
     } catch (e) {
       return [];
     }
-  }, []);
+  }, [normalizeMessageChannel]);
 
   const getModeSeedMessages = useCallback((mode: AppMode): MeshMessage[] => {
     const storedRealMessages = loadStoredMessages();
@@ -66,9 +98,11 @@ const App: React.FC = () => {
       return storedRealMessages;
     }
     const dedupe = new Set(storedRealMessages.map((msg) => msg.id));
-    const demoOnlyMessages = (DUMMY_MESSAGES as MeshMessage[]).filter((msg) => !dedupe.has(msg.id));
+    const demoOnlyMessages = (DUMMY_MESSAGES as MeshMessage[])
+      .map((msg) => normalizeMessageChannel(msg))
+      .filter((msg) => !dedupe.has(msg.id));
     return [...demoOnlyMessages, ...storedRealMessages];
-  }, [loadStoredMessages]);
+  }, [loadStoredMessages, normalizeMessageChannel]);
 
   useEffect(() => {
     const storedNickname = localStorage.getItem('meshaid_nick');
@@ -89,6 +123,10 @@ const App: React.FC = () => {
     document.body.classList.toggle('theme-light', theme === 'light');
     localStorage.setItem('meshaid_theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem(CHANNEL_STORAGE_KEY, activeChannel);
+  }, [activeChannel]);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -117,9 +155,10 @@ const App: React.FC = () => {
       localStorage.setItem('meshaid_nick', nickname);
       
       const unsubscribeMessages = meshService.onMessage((msg) => {
+        const normalizedMsg = normalizeMessageChannel(msg);
         setMessages(prev => {
-          const dedupedPrev = prev.filter((existing) => existing.id !== msg.id);
-          const newMsgs = [msg, ...dedupedPrev].slice(0, 100);
+          const dedupedPrev = prev.filter((existing) => existing.id !== normalizedMsg.id);
+          const newMsgs = [normalizedMsg, ...dedupedPrev].slice(0, 100);
           const persistable = newMsgs.filter((item) => !isDummyMessage(item));
           localStorage.setItem(MESSAGE_HISTORY_KEY, JSON.stringify(persistable));
           return newMsgs;
@@ -142,14 +181,14 @@ const App: React.FC = () => {
         unsubscribePeers();
       };
     }
-  }, [isInitialized, nickname, isDummyMessage]);
+  }, [isInitialized, nickname, isDummyMessage, normalizeMessageChannel]);
 
   const handleSend = useCallback(() => {
     if (!inputText.trim()) return;
     setIsSending(true);
     setTimeout(() => {
       try {
-        meshService.sendMessage(selectedType, inputText, myLocation, manualLocation);
+        meshService.sendMessage(selectedType, inputText, myLocation, manualLocation, activeChannel);
         setInputText('');
         setManualLocation('');
       } catch (error) {
@@ -158,15 +197,19 @@ const App: React.FC = () => {
         setIsSending(false);
       }
     }, 150);
-  }, [inputText, selectedType, myLocation, manualLocation]);
+  }, [inputText, selectedType, myLocation, manualLocation, activeChannel]);
+
+  const visibleMessages = useMemo(() => {
+    return messages.filter((message) => message.channel === activeChannel);
+  }, [messages, activeChannel]);
 
   const sortedMessages = useMemo(() => {
-    return [...messages].sort((a, b) => {
+    return [...visibleMessages].sort((a, b) => {
       if (a.type === MessageType.SOS && b.type !== MessageType.SOS) return -1;
       if (a.type !== MessageType.SOS && b.type === MessageType.SOS) return 1;
       return b.timestamp - a.timestamp;
     });
-  }, [messages]);
+  }, [visibleMessages]);
 
   const activeSOSCount = useMemo(
     () => messages.filter(m => m.type === MessageType.SOS).length,
@@ -176,6 +219,19 @@ const App: React.FC = () => {
     () => peers.filter(p => p.status === 'online').length,
     [peers]
   );
+  const channelStats = useMemo(() => {
+    return CHANNELS.map((channel) => {
+      const channelMessages = messages.filter((message) => message.channel === channel.id);
+      const criticalCount = channelMessages.filter(
+        (message) => message.type === MessageType.SOS || message.type === MessageType.ALERT
+      ).length;
+      return {
+        ...channel,
+        total: channelMessages.length,
+        critical: criticalCount,
+      };
+    });
+  }, [messages]);
   const currentConfig = MESSAGE_CONFIG[selectedType];
   const isLightTheme = theme === 'light';
 
@@ -301,6 +357,57 @@ const App: React.FC = () => {
                 <div className={`text-3xl sm:text-4xl md:text-5xl heading leading-none ${activeSOSCount > 0 ? 'text-red-500' : 'text-white'}`}>{activeSOSCount}</div>
                 <div className={`mono text-[8px] sm:text-[9px] md:text-[10px] font-black ${activeSOSCount > 0 ? 'text-red-500/50' : 'text-white/20'}`}>SOS</div>
               </div>
+            </div>
+          </section>
+
+          <section className="space-y-3 sm:space-y-4">
+            <div className="flex items-center justify-between px-1">
+              <span className="mono text-[8px] sm:text-[9px] md:text-[10px] text-white/40 uppercase font-black tracking-widest">Active_Channels</span>
+              <span className="mono text-[8px] sm:text-[9px] text-[#00f5a0] font-bold uppercase">Live</span>
+            </div>
+            <div className="space-y-2 sm:space-y-3">
+              {channelStats.map((channel) => {
+                const isActive = activeChannel === channel.id;
+                return (
+                  <button
+                    key={channel.id}
+                    type="button"
+                    onClick={() => setActiveChannel(channel.id)}
+                    className={`w-full text-left p-3 sm:p-4 rounded-xl sm:rounded-2xl border transition-all ${
+                      isActive
+                        ? isLightTheme
+                          ? 'bg-[#e6eefc] border-[#7aa2ff] shadow-[0_10px_24px_rgba(51,102,204,0.18)]'
+                          : 'bg-[#0f1f3f] border-[#3b82f6]/50 shadow-[0_12px_30px_rgba(20,80,255,0.2)]'
+                        : isLightTheme
+                          ? 'bg-[#cfd8e3]/20 border-[#8a97ab]/25 hover:bg-[#cfd8e3]/35'
+                          : 'bg-white/[0.02] border-white/5 hover:bg-white/[0.06]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className={`mono text-[10px] sm:text-xs font-black uppercase tracking-tight ${isLightTheme ? 'text-[#1a2538]' : 'text-white'}`}>{channel.label}</span>
+                      {channel.critical > 0 ? (
+                        <span className="mono text-[8px] sm:text-[9px] font-black uppercase px-2 sm:px-2.5 py-1 rounded-full bg-red-500/20 text-red-400 border border-red-500/40">
+                          {channel.critical} Critical
+                        </span>
+                      ) : (
+                        <span className="mono text-[8px] sm:text-[9px] font-black uppercase px-2 sm:px-2.5 py-1 rounded-full bg-white/5 text-white/40 border border-white/10">
+                          {channel.chip}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-2 sm:mt-3 flex items-center justify-between">
+                      <span className={`mono text-[9px] sm:text-[10px] uppercase font-bold tracking-widest ${isLightTheme ? 'text-[#5f6d82]' : 'text-white/40'}`}>
+                        Messages {channel.total}
+                      </span>
+                      <span className={`mono text-[10px] font-black uppercase ${
+                        isActive ? 'text-[#00d78f]' : isLightTheme ? 'text-[#7a8799]' : 'text-white/30'
+                      }`}>
+                        {isActive ? 'Open' : 'Join'}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </section>
 
@@ -474,6 +581,9 @@ const App: React.FC = () => {
               <div className="flex flex-col items-center justify-center py-32 sm:py-48 md:py-64 opacity-[0.05] group">
                 <div className="w-32 h-32 sm:w-40 sm:h-40 md:w-48 md:h-48 border-[4px] sm:border-[5px] md:border-[6px] border-dashed border-white rounded-full animate-spin-slow group-hover:border-[#00f5a0] transition-colors"></div>
                 <h3 className="heading text-5xl sm:text-6xl md:text-7xl lg:text-8xl xl:text-9xl text-center mt-6 sm:mt-8 md:mt-12 tracking-tighter">FREQUENCY_SCAN</h3>
+                <p className="mono text-[10px] sm:text-xs uppercase tracking-[0.2em] mt-3 text-white/50">
+                  {activeChannel.toUpperCase()} CHANNEL
+                </p>
               </div>
             ) : (
               sortedMessages.map((msg, idx) => (
@@ -585,6 +695,9 @@ const App: React.FC = () => {
                       <div className={`bg-white/[0.03] border border-white/10 rounded-xl sm:rounded-2xl flex flex-col gap-2 sm:gap-3 shadow-2xl compose-sidecard ${isLightTheme ? 'p-2.5 sm:p-3' : 'p-3 sm:p-4'}`}>
                         <div className="flex items-center justify-between">
                           <span className="mono text-[8px] sm:text-[9px] text-white/30 uppercase font-black tracking-widest">Mesh_Sync</span>
+                          <span className="mono text-[8px] sm:text-[9px] text-[#00f5a0] uppercase font-black tracking-widest">
+                            {activeChannel}
+                          </span>
                           <div className="flex gap-0.5 sm:gap-1 h-4 sm:h-5 items-end">
                             {[1,2,3,4,5,6].map(i => <div key={i} className={`w-1 sm:w-1.5 bg-[#00f5a0] rounded-full ${i === 6 ? 'h-full' : 'h-2/3'} animate-pulse`} style={{ animationDelay: `${i*100}ms` }}></div>)}
                           </div>

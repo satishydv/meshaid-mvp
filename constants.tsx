@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { MessageType } from './types';
+import { MessageType, MessageChannel } from './types';
 
 export const MESSAGE_CONFIG = {
   [MessageType.SOS]: {
@@ -51,6 +51,7 @@ export const DUMMY_MESSAGES = [
   {
     id: 'dummy-1',
     type: MessageType.SOS,
+    channel: MessageChannel.GENERAL,
     sender: 'Ghost-1',
     senderId: 'peer-ghost-1',
     timestamp: Date.now() - 1000 * 60 * 5,
@@ -64,6 +65,7 @@ export const DUMMY_MESSAGES = [
   {
     id: 'dummy-2',
     type: MessageType.MEDICAL,
+    channel: MessageChannel.MEDICAL,
     sender: 'Rescue-Prime',
     senderId: 'peer-rescue-prime',
     timestamp: Date.now() - 1000 * 60 * 12,
@@ -76,6 +78,7 @@ export const DUMMY_MESSAGES = [
   {
     id: 'dummy-3',
     type: MessageType.ALERT,
+    channel: MessageChannel.EVACUATION,
     sender: 'Watchman',
     senderId: 'peer-watchman',
     timestamp: Date.now() - 1000 * 60 * 20,

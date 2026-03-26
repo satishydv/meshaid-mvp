@@ -7,6 +7,13 @@ export enum MessageType {
   ALERT = 'ALERT'
 }
 
+export enum MessageChannel {
+  GENERAL = 'general',
+  MEDICAL = 'medical',
+  LOGISTICS = 'logistics',
+  EVACUATION = 'evacuation'
+}
+
 export interface GeoLocation {
   lat: number;
   lng: number;
@@ -16,6 +23,7 @@ export interface GeoLocation {
 export interface MeshMessage {
   id: string;
   type: MessageType;
+  channel: MessageChannel;
   sender: string;
   senderId: string;
   timestamp: number;
