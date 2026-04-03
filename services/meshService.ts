@@ -1,4 +1,4 @@
-import { MeshMessage, Peer, MessageType, GeoLocation } from '../types';
+import { MeshMessage, Peer, MessageType, GeoLocation, MessageChannel } from '../types';
 
 type MessageHandler = (msg: MeshMessage) => void;
 type PeerHandler = (peers: Peer[]) => void;
@@ -22,7 +22,23 @@ type MeshAckPacket = {
   timestamp: number;
 };
 
-type MeshPacket = HeartbeatPacket | MeshMessagePacket | MeshAckPacket;
+type HistoryRequestPacket = {
+  type: 'HISTORY_REQUEST';
+  requesterId: string;
+  targetPeerId?: string;
+  knownMessageIds: string[];
+  timestamp: number;
+};
+
+type HistoryResponsePacket = {
+  type: 'HISTORY_RESPONSE';
+  fromPeerId: string;
+  toPeerId: string;
+  messages: MeshMessage[];
+  timestamp: number;
+};
+
+type MeshPacket = HeartbeatPacket | MeshMessagePacket | MeshAckPacket | HistoryRequestPacket | HistoryResponsePacket;
 
 type PendingAck = {
   msg: MeshMessage;
@@ -41,6 +57,8 @@ class MeshService {
   private currentPeers: Map<string, Peer> = new Map();
   private pendingAcks: Map<string, PendingAck> = new Map();
   private recentlySeenMessageIds: Map<string, number> = new Map();
+  private historyByMessageId: Map<string, MeshMessage> = new Map();
+  private historySyncRequestTimestamps: Map<string, number> = new Map();
 
   private myPeerId: string;
   private myNickname: string;
@@ -53,8 +71,10 @@ class MeshService {
 
   private readonly PEER_STORAGE_KEY = 'meshaid_peer_registry_v4';
   private readonly OUTBOX_STORAGE_KEY = 'meshaid_outbox_v2';
+  private readonly HISTORY_STORAGE_KEY = 'meshaid_msg_history';
   private readonly MAX_RECENT_MESSAGE_IDS = 500;
-  private readonly MAX_RETRY_ATTEMPTS = 4;
+  private readonly MAX_HISTORY_MESSAGES = 300;
+  private readonly MAX_HISTORY_SYNC_IDS = 150;
   private readonly RELAY_PORT = '3001';
   private readonly RELAY_PATH = '/mesh-relay';
 
@@ -65,6 +85,7 @@ class MeshService {
 
     this.loadPersistedPeers();
     this.loadOutbox();
+    this.loadHistory();
 
     this.channel.onmessage = (event) => this.handlePacket(event.data);
     this.connectRelaySocket();
@@ -80,6 +101,7 @@ class MeshService {
     this.myNickname = nickname;
     this.broadcastHeartbeat();
     this.retryPendingMessages();
+    this.requestHistorySync();
   }
 
   public onMessage(handler: MessageHandler) {
@@ -97,10 +119,17 @@ class MeshService {
     };
   }
 
-  public sendMessage(type: MessageType, text: string, location?: GeoLocation, manualLocation?: string) {
+  public sendMessage(
+    type: MessageType,
+    text: string,
+    location?: GeoLocation,
+    manualLocation?: string,
+    channel: MessageChannel = MessageChannel.GENERAL
+  ) {
     const msg: MeshMessage = {
       id: this.createMessageId(),
       type,
+      channel,
       sender: this.myNickname || 'Unknown Unit',
       senderId: this.myPeerId,
       timestamp: Date.now(),
@@ -155,6 +184,8 @@ class MeshService {
           this.reconnectRelayTimerId = null;
         }
         this.broadcastHeartbeat();
+        this.retryPendingMessages();
+        this.requestHistorySync();
       };
 
       socket.onmessage = (event) => {
@@ -209,20 +240,32 @@ class MeshService {
 
     if (data.type === 'MESH_ACK') {
       this.handleAck(data as MeshAckPacket);
+      return;
+    }
+
+    if (data.type === 'HISTORY_REQUEST') {
+      this.handleHistoryRequest(data as HistoryRequestPacket);
+      return;
+    }
+
+    if (data.type === 'HISTORY_RESPONSE') {
+      this.handleHistoryResponse(data as HistoryResponsePacket);
     }
   }
 
   private handleIncomingMessage(msg?: MeshMessage) {
     if (!msg || !msg.id) return;
-    if (this.hasSeenMessage(msg.id)) return;
+    const normalizedMsg = this.normalizeMessageChannel(msg);
+    if (this.hasSeenMessage(normalizedMsg.id)) return;
 
-    this.markMessageSeen(msg.id);
-    this.notifyMessage(msg);
+    this.markMessageSeen(normalizedMsg.id);
+    this.trackHistoryMessage(normalizedMsg);
+    this.notifyMessage(normalizedMsg);
 
-    if (msg.senderId !== this.myPeerId) {
+    if (normalizedMsg.senderId !== this.myPeerId) {
       const ack: MeshAckPacket = {
         type: 'MESH_ACK',
-        messageId: msg.id,
+        messageId: normalizedMsg.id,
         fromPeerId: this.myPeerId,
         timestamp: Date.now()
       };
@@ -235,6 +278,33 @@ class MeshService {
     if (this.pendingAcks.delete(packet.messageId)) {
       this.persistOutbox();
     }
+  }
+
+  private handleHistoryRequest(packet: HistoryRequestPacket) {
+    if (!packet.requesterId || packet.requesterId === this.myPeerId) return;
+    if (packet.targetPeerId && packet.targetPeerId !== this.myPeerId) return;
+
+    const knownSet = new Set(packet.knownMessageIds || []);
+    const messages = Array.from(this.historyByMessageId.values())
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .filter((msg) => !knownSet.has(msg.id))
+      .slice(0, this.MAX_HISTORY_MESSAGES);
+
+    const response: HistoryResponsePacket = {
+      type: 'HISTORY_RESPONSE',
+      fromPeerId: this.myPeerId,
+      toPeerId: packet.requesterId,
+      messages,
+      timestamp: Date.now()
+    };
+    this.postPacket(response);
+  }
+
+  private handleHistoryResponse(packet: HistoryResponsePacket) {
+    if (packet.toPeerId !== this.myPeerId) return;
+    if (!Array.isArray(packet.messages) || packet.messages.length === 0) return;
+
+    packet.messages.forEach((msg) => this.handleIncomingMessage(msg));
   }
 
   private postPacket(packet: MeshPacket) {
@@ -253,6 +323,7 @@ class MeshService {
       lastSentAt: Date.now(),
       attempts: 1
     });
+    this.trackHistoryMessage(msg);
     this.persistOutbox();
   }
 
@@ -260,19 +331,15 @@ class MeshService {
     if (this.pendingAcks.size === 0) return;
 
     const hasOnlinePeers = Array.from(this.currentPeers.values()).some((p) => p.status === 'online');
-    if (!hasOnlinePeers) return;
+    const hasRelayLink = this.relaySocket?.readyState === WebSocket.OPEN;
+    if (!hasOnlinePeers && !hasRelayLink) return;
 
     const now = Date.now();
     let changed = false;
 
     for (const [messageId, pending] of this.pendingAcks.entries()) {
-      if (now - pending.lastSentAt < 3000) continue;
-
-      if (pending.attempts >= this.MAX_RETRY_ATTEMPTS) {
-        this.pendingAcks.delete(messageId);
-        changed = true;
-        continue;
-      }
+      const retryDelay = Math.min(20000, 2500 * Math.max(1, pending.attempts));
+      if (now - pending.lastSentAt < retryDelay) continue;
 
       this.postPacket({ type: 'MESH_MESSAGE', payload: pending.msg });
       pending.lastSentAt = now;
@@ -321,6 +388,12 @@ class MeshService {
       this.notifyPeers();
     }
     this.schedulePersistPeers();
+
+    const peerBecameAvailable = !existing || existing.status !== 'online';
+    if (peerBecameAvailable) {
+      this.requestHistorySync(peer.id);
+      this.retryPendingMessages();
+    }
   }
 
   private checkStalePeers() {
@@ -405,8 +478,10 @@ class MeshService {
       const pending: PendingAck[] = JSON.parse(stored);
       pending.forEach((item) => {
         if (!item?.msg?.id) return;
-        this.pendingAcks.set(item.msg.id, item);
-        this.markMessageSeen(item.msg.id);
+        const normalizedMsg = this.normalizeMessageChannel(item.msg);
+        this.pendingAcks.set(normalizedMsg.id, { ...item, msg: normalizedMsg });
+        this.markMessageSeen(normalizedMsg.id);
+        this.trackHistoryMessage(normalizedMsg);
       });
     } catch (error) {
       console.error('MeshAid: Failed to load outbox', error);
@@ -420,6 +495,79 @@ class MeshService {
     } catch (error) {
       console.error('MeshAid: Failed to persist outbox', error);
     }
+  }
+
+  private loadHistory() {
+    try {
+      const stored = localStorage.getItem(this.HISTORY_STORAGE_KEY);
+      if (!stored) return;
+      const history: MeshMessage[] = JSON.parse(stored);
+      history.forEach((msg) => {
+        if (!msg?.id) return;
+        const normalizedMsg = this.normalizeMessageChannel(msg);
+        this.historyByMessageId.set(normalizedMsg.id, normalizedMsg);
+        this.markMessageSeen(normalizedMsg.id);
+      });
+    } catch (error) {
+      console.error('MeshAid: Failed to load history', error);
+    }
+  }
+
+  private persistHistory() {
+    try {
+      const history = Array.from(this.historyByMessageId.values())
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, this.MAX_HISTORY_MESSAGES);
+      localStorage.setItem(this.HISTORY_STORAGE_KEY, JSON.stringify(history));
+    } catch (error) {
+      console.error('MeshAid: Failed to persist history', error);
+    }
+  }
+
+  private trackHistoryMessage(msg: MeshMessage) {
+    if (!msg?.id) return;
+    this.historyByMessageId.set(msg.id, msg);
+    if (this.historyByMessageId.size > this.MAX_HISTORY_MESSAGES * 2) {
+      const trimmed = Array.from(this.historyByMessageId.values())
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, this.MAX_HISTORY_MESSAGES);
+      this.historyByMessageId.clear();
+      trimmed.forEach((item) => this.historyByMessageId.set(item.id, item));
+    }
+    this.persistHistory();
+  }
+
+  private requestHistorySync(targetPeerId?: string) {
+    const key = targetPeerId || '__broadcast__';
+    const now = Date.now();
+    const lastRequestedAt = this.historySyncRequestTimestamps.get(key) || 0;
+    if (now - lastRequestedAt < 5000) return;
+    this.historySyncRequestTimestamps.set(key, now);
+
+    const knownMessageIds = Array.from(this.recentlySeenMessageIds.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, this.MAX_HISTORY_SYNC_IDS)
+      .map(([id]) => id);
+
+    const packet: HistoryRequestPacket = {
+      type: 'HISTORY_REQUEST',
+      requesterId: this.myPeerId,
+      targetPeerId,
+      knownMessageIds,
+      timestamp: now
+    };
+    this.postPacket(packet);
+  }
+
+  private normalizeMessageChannel(msg: MeshMessage): MeshMessage {
+    const maybeChannel = (msg as { channel?: string }).channel;
+    if (maybeChannel && Object.values(MessageChannel).includes(maybeChannel as MessageChannel)) {
+      return msg;
+    }
+    return {
+      ...msg,
+      channel: MessageChannel.GENERAL
+    };
   }
 
   private getPriority(type: MessageType): number {

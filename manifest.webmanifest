@@ -1,9 +1,31 @@
 {
   "name": "MeshAid Tactical Network",
   "short_name": "MeshAid",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "portrait-primary",
   "background_color": "#040508",
   "theme_color": "#00f5a0",
-  "description": "Offline-first tactical emergency mesh messaging app."
+  "description": "Offline-first tactical emergency mesh messaging app.",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
 }
