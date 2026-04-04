@@ -5,14 +5,28 @@ import { MeshMessage, MessageType, Peer, GeoLocation, MessageChannel } from './t
 import { MESSAGE_CONFIG, MOCK_NICKNAMES, DUMMY_MESSAGES } from './constants';
 import { MessageItem } from './components/MessageItem';
 
-const SECTOR_VITALS = [
+type SectorVital = {
+  label: string;
+  status: string;
+  value: number;
+  color: string;
+};
+
+type Facility = {
+  name: string;
+  type: string;
+  dist: string;
+  status: string;
+};
+
+const SECTOR_VITALS: SectorVital[] = [
   { label: 'POWER GRID', status: 'CRITICAL', value: 14, color: '#ff2e2e' },
   { label: 'WATER RESERVOIR', status: 'LOW', value: 38, color: '#fb923c' },
   { label: 'COMM RELAY', status: 'STABLE', value: 92, color: '#00f5a0' },
   { label: 'MED LOGISTICS', status: 'OPTIMAL', value: 85, color: '#3b82f6' },
 ];
 
-const NEARBY_FACILITIES = [
+const NEARBY_FACILITIES: Facility[] = [
   { name: 'ST. JUDE MEDICAL CENTER', type: 'HOSPITAL', dist: '1.2km', status: 'ACTIVE' },
   { name: 'SEC 4 EMERGENCY SHELTER', type: 'SHELTER', dist: '0.5km', status: 'FULL' },
   { name: 'NORTH PLAZA SUPPLY', type: 'RESOURCES', dist: '2.8km', status: 'ACTIVE' },
@@ -22,6 +36,12 @@ type AppMode = 'demo' | 'live';
 const MODE_STORAGE_KEY = 'meshaid_mode';
 const MESSAGE_HISTORY_KEY = 'meshaid_msg_history';
 const CHANNEL_STORAGE_KEY = 'meshaid_active_channel';
+const FULFILLED_STORAGE_KEY = 'meshaid_fulfilled_message_ids_v1';
+const ADMIN_SESSION_KEY = 'meshaid_admin_session_v1';
+const LIVE_SECTOR_STORAGE_KEY = 'meshaid_live_sector_vitals_v1';
+const LIVE_FACILITY_STORAGE_KEY = 'meshaid_live_facilities_v1';
+const ADMIN_USERNAME = 'admin';
+const ADMIN_PASSWORD = 'admin@123';
 
 type ChannelMeta = {
   id: MessageChannel;
@@ -36,7 +56,50 @@ const CHANNELS: ChannelMeta[] = [
   { id: MessageChannel.EVACUATION, label: 'EVACUATION GRID', chip: 'EVAC' },
 ];
 
+const formatLocationAnchor = (location: GeoLocation) => {
+  const lat = location.lat.toFixed(5);
+  const lng = location.lng.toFixed(5);
+  if (typeof location.accuracy === 'number' && Number.isFinite(location.accuracy)) {
+    return `${lat}, ${lng} (${Math.round(location.accuracy)}m)`;
+  }
+  return `${lat}, ${lng}`;
+};
+
+const escapeCsvValue = (value: string | number | boolean | null | undefined) => {
+  const normalized = String(value ?? '');
+  if (!/[",\n]/.test(normalized)) return normalized;
+  return `"${normalized.replace(/"/g, '""')}"`;
+};
+
+const normalizeSectorVitals = (raw: unknown): SectorVital[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Partial<SectorVital> => !!item && typeof item === 'object')
+    .map((item) => ({
+      label: String(item.label ?? '').toUpperCase().trim(),
+      status: String(item.status ?? '').toUpperCase().trim(),
+      value: Math.max(0, Math.min(100, Number(item.value ?? 0))),
+      color: String(item.color ?? '#00f5a0').trim() || '#00f5a0',
+    }))
+    .filter((item) => !!item.label);
+};
+
+const normalizeFacilities = (raw: unknown): Facility[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Partial<Facility> => !!item && typeof item === 'object')
+    .map((item) => ({
+      name: String(item.name ?? '').toUpperCase().trim(),
+      type: String(item.type ?? '').toUpperCase().trim(),
+      dist: String(item.dist ?? '').trim(),
+      status: String(item.status ?? '').toUpperCase().trim(),
+    }))
+    .filter((item) => !!item.name);
+};
+
 const App: React.FC = () => {
+  const normalizedPath = window.location.pathname.replace(/\/+$/, '').toLowerCase();
+  const isAdminRoute = normalizedPath === '/admin';
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const storedTheme = localStorage.getItem('meshaid_theme');
     return storedTheme === 'light' ? 'light' : 'dark';
@@ -64,9 +127,47 @@ const App: React.FC = () => {
     }
     return MessageChannel.GENERAL;
   });
+  const [fulfilledMessageIds, setFulfilledMessageIds] = useState<Set<string>>(() => {
+    const stored = localStorage.getItem(FULFILLED_STORAGE_KEY);
+    if (!stored) return new Set<string>();
+    try {
+      const parsed = JSON.parse(stored) as unknown;
+      if (!Array.isArray(parsed)) return new Set<string>();
+      return new Set(parsed.filter((item): item is string => typeof item === 'string'));
+    } catch {
+      return new Set<string>();
+    }
+  });
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
+    return sessionStorage.getItem(ADMIN_SESSION_KEY) === '1';
+  });
+  const [adminUsernameInput, setAdminUsernameInput] = useState('');
+  const [adminPasswordInput, setAdminPasswordInput] = useState('');
+  const [adminAuthError, setAdminAuthError] = useState('');
+  const [adminMessages, setAdminMessages] = useState<MeshMessage[]>([]);
+  const [adminSectorVitals, setAdminSectorVitals] = useState<SectorVital[]>(() => {
+    const stored = localStorage.getItem(LIVE_SECTOR_STORAGE_KEY);
+    if (!stored) return [];
+    try {
+      return normalizeSectorVitals(JSON.parse(stored));
+    } catch {
+      return [];
+    }
+  });
+  const [adminFacilities, setAdminFacilities] = useState<Facility[]>(() => {
+    const stored = localStorage.getItem(LIVE_FACILITY_STORAGE_KEY);
+    if (!stored) return [];
+    try {
+      return normalizeFacilities(JSON.parse(stored));
+    } catch {
+      return [];
+    }
+  });
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const modeMenuRef = useRef<HTMLDivElement>(null);
+  const locationWatchIdRef = useRef<number | null>(null);
+  const locationEditedRef = useRef(false);
 
   const isDummyMessage = useCallback((msg: MeshMessage) => msg.id.startsWith('dummy-'), []);
   const normalizeMessageChannel = useCallback((msg: MeshMessage): MeshMessage => {
@@ -115,9 +216,50 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (isAdminRoute) return;
+    if (!('geolocation' in navigator)) return;
+
+    const handlePosition = (pos: GeolocationPosition) => {
+      const lockedLocation: GeoLocation = {
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        accuracy: pos.coords.accuracy,
+      };
+      setMyLocation(lockedLocation);
+      if (!locationEditedRef.current) {
+        setManualLocation(formatLocationAnchor(lockedLocation));
+      }
+    };
+
+    const handleLocationError = () => {
+      console.log('Location access denied or unavailable');
+    };
+
+    navigator.geolocation.getCurrentPosition(handlePosition, handleLocationError, {
+      enableHighAccuracy: true,
+      maximumAge: 30000,
+      timeout: 10000,
+    });
+
+    locationWatchIdRef.current = navigator.geolocation.watchPosition(handlePosition, handleLocationError, {
+      enableHighAccuracy: true,
+      maximumAge: 15000,
+      timeout: 20000,
+    });
+
+    return () => {
+      if (locationWatchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(locationWatchIdRef.current);
+        locationWatchIdRef.current = null;
+      }
+    };
+  }, [isAdminRoute]);
+
+  useEffect(() => {
+    if (isAdminRoute) return;
     setMessages(getModeSeedMessages(appMode));
     localStorage.setItem(MODE_STORAGE_KEY, appMode);
-  }, [appMode, getModeSeedMessages]);
+  }, [appMode, getModeSeedMessages, isAdminRoute]);
 
   useEffect(() => {
     document.body.classList.toggle('theme-light', theme === 'light');
@@ -127,6 +269,57 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem(CHANNEL_STORAGE_KEY, activeChannel);
   }, [activeChannel]);
+
+  useEffect(() => {
+    localStorage.setItem(FULFILLED_STORAGE_KEY, JSON.stringify(Array.from(fulfilledMessageIds)));
+  }, [fulfilledMessageIds]);
+
+  useEffect(() => {
+    localStorage.setItem(LIVE_SECTOR_STORAGE_KEY, JSON.stringify(adminSectorVitals));
+  }, [adminSectorVitals]);
+
+  useEffect(() => {
+    localStorage.setItem(LIVE_FACILITY_STORAGE_KEY, JSON.stringify(adminFacilities));
+  }, [adminFacilities]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === FULFILLED_STORAGE_KEY) {
+        if (!event.newValue) {
+          setFulfilledMessageIds(new Set<string>());
+          return;
+        }
+        try {
+          const parsed = JSON.parse(event.newValue) as unknown;
+          if (!Array.isArray(parsed)) return;
+          setFulfilledMessageIds(new Set(parsed.filter((item): item is string => typeof item === 'string')));
+        } catch {
+          // Ignore malformed storage payload.
+        }
+        return;
+      }
+
+      if (event.key === LIVE_SECTOR_STORAGE_KEY && event.newValue) {
+        try {
+          setAdminSectorVitals(normalizeSectorVitals(JSON.parse(event.newValue)));
+        } catch {
+          // Ignore malformed storage payload.
+        }
+        return;
+      }
+
+      if (event.key === LIVE_FACILITY_STORAGE_KEY && event.newValue) {
+        try {
+          setAdminFacilities(normalizeFacilities(JSON.parse(event.newValue)));
+        } catch {
+          // Ignore malformed storage payload.
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -150,6 +343,7 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (isAdminRoute) return;
     if (isInitialized) {
       meshService.init(nickname);
       localStorage.setItem('meshaid_nick', nickname);
@@ -169,28 +363,27 @@ const App: React.FC = () => {
         setPeers(newPeers);
       });
 
-      if ("geolocation" in navigator) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => setMyLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-          (err) => console.log("Location access denied")
-        );
-      }
-
       return () => {
         unsubscribeMessages();
         unsubscribePeers();
       };
     }
-  }, [isInitialized, nickname, isDummyMessage, normalizeMessageChannel]);
+  }, [isAdminRoute, isInitialized, nickname, isDummyMessage, normalizeMessageChannel]);
 
   const handleSend = useCallback(() => {
     if (!inputText.trim()) return;
     setIsSending(true);
     setTimeout(() => {
       try {
-        meshService.sendMessage(selectedType, inputText, myLocation, manualLocation, activeChannel);
+        const locationText = manualLocation.trim() || (myLocation ? formatLocationAnchor(myLocation) : '');
+        meshService.sendMessage(selectedType, inputText, myLocation, locationText, activeChannel);
         setInputText('');
-        setManualLocation('');
+        if (myLocation) {
+          locationEditedRef.current = false;
+          setManualLocation(formatLocationAnchor(myLocation));
+        } else {
+          setManualLocation('');
+        }
       } catch (error) {
         console.error('Failed to send message:', error);
       } finally {
@@ -199,9 +392,96 @@ const App: React.FC = () => {
     }, 150);
   }, [inputText, selectedType, myLocation, manualLocation, activeChannel]);
 
+  const loadLiveMessagesSnapshot = useCallback((): MeshMessage[] => {
+    const raw = localStorage.getItem(MESSAGE_HISTORY_KEY);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as MeshMessage[];
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((msg) => normalizeMessageChannel(msg))
+        .filter((msg) => !isDummyMessage(msg))
+        .sort((a, b) => b.timestamp - a.timestamp);
+    } catch {
+      return [];
+    }
+  }, [isDummyMessage, normalizeMessageChannel]);
+
+  useEffect(() => {
+    if (!isAdminRoute) return;
+    const refresh = () => {
+      setAdminMessages(loadLiveMessagesSnapshot());
+    };
+    refresh();
+    const intervalId = window.setInterval(refresh, 2000);
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === MESSAGE_HISTORY_KEY) {
+        refresh();
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, [isAdminRoute, loadLiveMessagesSnapshot]);
+
+  const pendingAdminMessages = useMemo(() => {
+    return adminMessages.filter((msg) => !fulfilledMessageIds.has(msg.id));
+  }, [adminMessages, fulfilledMessageIds]);
+
+  const markMessageFulfilled = useCallback((messageId: string) => {
+    setFulfilledMessageIds((prev) => {
+      const next = new Set(prev);
+      next.add(messageId);
+      return next;
+    });
+  }, []);
+
+  const exportLiveMessagesCsv = useCallback(() => {
+    const headers = [
+      'id',
+      'timestamp',
+      'channel',
+      'type',
+      'sender',
+      'text',
+      'spatial_anchor',
+      'gps_lat',
+      'gps_lng',
+      'status',
+    ];
+    const rows = adminMessages.map((msg) => [
+      msg.id,
+      new Date(msg.timestamp).toISOString(),
+      msg.channel,
+      msg.type,
+      msg.sender,
+      msg.payload.text,
+      msg.payload.manualLocation ?? '',
+      msg.payload.location?.lat ?? '',
+      msg.payload.location?.lng ?? '',
+      fulfilledMessageIds.has(msg.id) ? 'fulfilled' : 'pending',
+    ]);
+    const csvContent = [headers, ...rows]
+      .map((row) => row.map((cell) => escapeCsvValue(cell)).join(','))
+      .join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `meshaid-live-messages-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [adminMessages, fulfilledMessageIds]);
+
   const visibleMessages = useMemo(() => {
-    return messages.filter((message) => message.channel === activeChannel);
-  }, [messages, activeChannel]);
+    const channelMessages = messages.filter((message) => message.channel === activeChannel);
+    if (appMode !== 'live') return channelMessages;
+    return channelMessages.filter((message) => !fulfilledMessageIds.has(message.id));
+  }, [messages, activeChannel, appMode, fulfilledMessageIds]);
 
   const sortedMessages = useMemo(() => {
     return [...visibleMessages].sort((a, b) => {
@@ -232,8 +512,319 @@ const App: React.FC = () => {
       };
     });
   }, [messages]);
+  const effectiveSectorVitals = useMemo(() => {
+    if (appMode === 'live' && adminSectorVitals.length > 0) {
+      return adminSectorVitals;
+    }
+    return SECTOR_VITALS;
+  }, [appMode, adminSectorVitals]);
+
+  const effectiveFacilities = useMemo(() => {
+    if (appMode === 'live' && adminFacilities.length > 0) {
+      return adminFacilities;
+    }
+    return NEARBY_FACILITIES;
+  }, [appMode, adminFacilities]);
+
+  const hasLiveIntelPanels = appMode === 'live' && (adminSectorVitals.length > 0 || adminFacilities.length > 0);
   const currentConfig = MESSAGE_CONFIG[selectedType];
   const isLightTheme = theme === 'light';
+
+  const updateSectorVital = useCallback((index: number, patch: Partial<SectorVital>) => {
+    setAdminSectorVitals((prev) =>
+      prev.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item))
+    );
+  }, []);
+
+  const updateFacility = useCallback((index: number, patch: Partial<Facility>) => {
+    setAdminFacilities((prev) =>
+      prev.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item))
+    );
+  }, []);
+  const handleAdminLogin = useCallback(
+    (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (adminUsernameInput === ADMIN_USERNAME && adminPasswordInput === ADMIN_PASSWORD) {
+        setIsAdminAuthenticated(true);
+        sessionStorage.setItem(ADMIN_SESSION_KEY, '1');
+        setAdminAuthError('');
+        setAdminPasswordInput('');
+        return;
+      }
+      setAdminAuthError('Invalid credentials');
+    },
+    [adminPasswordInput, adminUsernameInput]
+  );
+  const handleAdminLogout = useCallback(() => {
+    setIsAdminAuthenticated(false);
+    sessionStorage.removeItem(ADMIN_SESSION_KEY);
+  }, []);
+
+  if (isAdminRoute) {
+    if (!isAdminAuthenticated) {
+      return (
+        <div className="min-h-screen flex items-center justify-center p-4 sm:p-6 bg-grid overflow-hidden relative app-shell">
+          <div className="scan-line"></div>
+          <button
+            type="button"
+            onClick={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+            className="theme-toggle absolute right-4 top-4 sm:right-6 sm:top-6 z-20"
+            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+          >
+            <svg className="w-4 h-4 sm:w-5 sm:h-5 fill-current" viewBox="0 0 24 24">
+              {theme === 'dark' ? (
+                <path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zM1 13h3v-2H1v2zm10-9h2V1h-2v3zm7.45 1.46l1.41-1.41-1.79-1.8-1.42 1.42 1.8 1.79zM17.24 19.16l1.8 1.79 1.41-1.41-1.79-1.8-1.42 1.42zM20 11v2h3v-2h-3zM11 20h2v3h-2v-3zM4.96 19.95l1.79-1.8-1.41-1.41-1.8 1.79 1.42 1.42zM12 6a6 6 0 100 12 6 6 0 000-12z" />
+              ) : (
+                <path d="M12.1 2.53A9 9 0 1021.47 13 7.5 7.5 0 0112.1 2.53z" />
+              )}
+            </svg>
+            <span className="mono text-[9px] sm:text-[10px] font-black uppercase tracking-wider">
+              {theme === 'dark' ? 'LIGHT' : 'DARK'}
+            </span>
+          </button>
+          <form onSubmit={handleAdminLogin} className="w-full max-w-md glass-panel p-6 sm:p-8 rounded-2xl border border-white/10">
+            <h1 className="heading text-5xl sm:text-6xl text-gradient tracking-tight">ADMIN</h1>
+            <p className="mono text-[10px] sm:text-xs uppercase text-white/50 tracking-[0.2em] mt-2">Live Control Console</p>
+            <div className="space-y-4 mt-6">
+              <input
+                type="text"
+                value={adminUsernameInput}
+                onChange={(event) => setAdminUsernameInput(event.target.value)}
+                placeholder="USERNAME"
+                className="w-full bg-white/[0.05] border border-white/10 p-3 sm:p-4 rounded-xl mono text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#00f5a0]/40 uppercase"
+                autoComplete="username"
+              />
+              <input
+                type="password"
+                value={adminPasswordInput}
+                onChange={(event) => setAdminPasswordInput(event.target.value)}
+                placeholder="PASSWORD"
+                className="w-full bg-white/[0.05] border border-white/10 p-3 sm:p-4 rounded-xl mono text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#00f5a0]/40"
+                autoComplete="current-password"
+              />
+              {adminAuthError && <p className="mono text-xs text-red-400 font-black uppercase">{adminAuthError}</p>}
+              <button
+                type="submit"
+                className="w-full py-3 sm:py-4 bg-gradient-to-r from-[#00f5a0] to-[#00d9ff] text-black heading text-2xl rounded-xl hover:brightness-110 transition-all shadow-2xl shadow-[#00f5a0]/30"
+              >
+                ACCESS DASHBOARD
+              </button>
+            </div>
+          </form>
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-h-screen app-shell text-white p-4 sm:p-6 md:p-8 bg-grid">
+        <div className="max-w-6xl mx-auto space-y-4 sm:space-y-6">
+          <div className="glass-panel rounded-2xl p-4 sm:p-5 border border-white/10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4">
+            <div>
+              <h1 className="heading text-4xl sm:text-5xl text-gradient tracking-tight">Admin Dashboard</h1>
+              <p className="mono text-[10px] sm:text-xs uppercase text-white/50 tracking-[0.2em]">Live Mode Requests Only</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+              <button
+                type="button"
+                onClick={exportLiveMessagesCsv}
+                className="px-4 py-2 rounded-xl mono text-xs font-black uppercase tracking-wide bg-[#00f5a0] text-black hover:brightness-110 transition-all"
+              >
+                Export CSV
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  window.location.href = '/';
+                }}
+                className="px-4 py-2 rounded-xl mono text-xs font-black uppercase tracking-wide border border-white/20 text-white/80 hover:bg-white/10 transition-all"
+              >
+                Back To App
+              </button>
+              <button
+                type="button"
+                onClick={handleAdminLogout}
+                className="px-4 py-2 rounded-xl mono text-xs font-black uppercase tracking-wide border border-red-500/30 text-red-300 hover:bg-red-500/10 transition-all"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+            <div className="glass-card rounded-2xl p-4 border border-white/10">
+              <p className="mono text-[10px] uppercase text-white/40 font-black">Pending Requests</p>
+              <p className="heading text-4xl text-[#00f5a0] leading-none mt-1">{pendingAdminMessages.length}</p>
+            </div>
+            <div className="glass-card rounded-2xl p-4 border border-white/10">
+              <p className="mono text-[10px] uppercase text-white/40 font-black">Fulfilled</p>
+              <p className="heading text-4xl text-blue-400 leading-none mt-1">
+                {Math.max(adminMessages.length - pendingAdminMessages.length, 0)}
+              </p>
+            </div>
+            <div className="glass-card rounded-2xl p-4 border border-white/10">
+              <p className="mono text-[10px] uppercase text-white/40 font-black">Total Live Messages</p>
+              <p className="heading text-4xl text-white leading-none mt-1">{adminMessages.length}</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-5">
+            <div className="glass-panel rounded-2xl border border-white/10 p-4 sm:p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="mono text-[10px] sm:text-xs uppercase text-white/50 tracking-[0.2em]">Sector Telemetry (Live)</p>
+                <button
+                  type="button"
+                  onClick={() => setAdminSectorVitals((prev) => [...prev, { label: 'NEW SECTOR', status: 'STABLE', value: 50, color: '#00f5a0' }])}
+                  className="px-3 py-1.5 rounded-lg mono text-[10px] font-black uppercase bg-[#00f5a0]/20 text-[#00f5a0] border border-[#00f5a0]/40"
+                >
+                  Add Row
+                </button>
+              </div>
+              <div className="space-y-2 max-h-[38vh] overflow-y-auto custom-scroll pr-1">
+                {adminSectorVitals.length === 0 ? (
+                  <p className="mono text-xs uppercase text-white/40 py-2">No live telemetry configured</p>
+                ) : (
+                  adminSectorVitals.map((item, index) => (
+                    <div key={`sv-${index}`} className="grid grid-cols-12 gap-2 items-center bg-white/[0.03] border border-white/10 rounded-xl p-2">
+                      <input
+                        value={item.label}
+                        onChange={(event) => updateSectorVital(index, { label: event.target.value.toUpperCase() })}
+                        placeholder="Label"
+                        className="col-span-4 bg-transparent border border-white/10 rounded-lg px-2 py-1.5 mono text-[10px] uppercase text-white"
+                      />
+                      <input
+                        value={item.status}
+                        onChange={(event) => updateSectorVital(index, { status: event.target.value.toUpperCase() })}
+                        placeholder="Status"
+                        className="col-span-3 bg-transparent border border-white/10 rounded-lg px-2 py-1.5 mono text-[10px] uppercase text-white"
+                      />
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={item.value}
+                        onChange={(event) => updateSectorVital(index, { value: Math.max(0, Math.min(100, Number(event.target.value || 0))) })}
+                        className="col-span-2 bg-transparent border border-white/10 rounded-lg px-2 py-1.5 mono text-[10px] uppercase text-white"
+                      />
+                      <input
+                        type="color"
+                        value={item.color}
+                        onChange={(event) => updateSectorVital(index, { color: event.target.value })}
+                        className="col-span-2 h-8 w-full bg-transparent border border-white/10 rounded-lg px-1"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setAdminSectorVitals((prev) => prev.filter((_, rowIndex) => rowIndex !== index))}
+                        className="col-span-1 rounded-lg border border-red-500/40 text-red-300 mono text-[10px] font-black uppercase py-1.5 hover:bg-red-500/10"
+                      >
+                        X
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+              <p className="mono text-[9px] uppercase text-white/35">Updates are auto-saved and visible in live mode sidebar.</p>
+            </div>
+
+            <div className="glass-panel rounded-2xl border border-white/10 p-4 sm:p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="mono text-[10px] sm:text-xs uppercase text-white/50 tracking-[0.2em]">Facility Manifest (Live)</p>
+                <button
+                  type="button"
+                  onClick={() => setAdminFacilities((prev) => [...prev, { name: 'NEW FACILITY', type: 'SHELTER', dist: '0.0km', status: 'ACTIVE' }])}
+                  className="px-3 py-1.5 rounded-lg mono text-[10px] font-black uppercase bg-[#00f5a0]/20 text-[#00f5a0] border border-[#00f5a0]/40"
+                >
+                  Add Row
+                </button>
+              </div>
+              <div className="space-y-2 max-h-[38vh] overflow-y-auto custom-scroll pr-1">
+                {adminFacilities.length === 0 ? (
+                  <p className="mono text-xs uppercase text-white/40 py-2">No live facilities configured</p>
+                ) : (
+                  adminFacilities.map((item, index) => (
+                    <div key={`fac-${index}`} className="grid grid-cols-12 gap-2 items-center bg-white/[0.03] border border-white/10 rounded-xl p-2">
+                      <input
+                        value={item.name}
+                        onChange={(event) => updateFacility(index, { name: event.target.value.toUpperCase() })}
+                        placeholder="Name"
+                        className="col-span-4 bg-transparent border border-white/10 rounded-lg px-2 py-1.5 mono text-[10px] uppercase text-white"
+                      />
+                      <input
+                        value={item.type}
+                        onChange={(event) => updateFacility(index, { type: event.target.value.toUpperCase() })}
+                        placeholder="Type"
+                        className="col-span-2 bg-transparent border border-white/10 rounded-lg px-2 py-1.5 mono text-[10px] uppercase text-white"
+                      />
+                      <input
+                        value={item.dist}
+                        onChange={(event) => updateFacility(index, { dist: event.target.value })}
+                        placeholder="Dist"
+                        className="col-span-2 bg-transparent border border-white/10 rounded-lg px-2 py-1.5 mono text-[10px] uppercase text-white"
+                      />
+                      <input
+                        value={item.status}
+                        onChange={(event) => updateFacility(index, { status: event.target.value.toUpperCase() })}
+                        placeholder="Status"
+                        className="col-span-3 bg-transparent border border-white/10 rounded-lg px-2 py-1.5 mono text-[10px] uppercase text-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setAdminFacilities((prev) => prev.filter((_, rowIndex) => rowIndex !== index))}
+                        className="col-span-1 rounded-lg border border-red-500/40 text-red-300 mono text-[10px] font-black uppercase py-1.5 hover:bg-red-500/10"
+                      >
+                        X
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+              <p className="mono text-[9px] uppercase text-white/35">Updates are auto-saved and visible in live mode sidebar.</p>
+            </div>
+          </div>
+
+          <div className="glass-panel rounded-2xl border border-white/10 overflow-hidden">
+            <div className="px-4 sm:px-5 py-3 border-b border-white/10">
+              <p className="mono text-[10px] sm:text-xs uppercase text-white/50 tracking-[0.2em]">Open Requests</p>
+            </div>
+            <div className="max-h-[62vh] overflow-y-auto custom-scroll divide-y divide-white/5">
+              {pendingAdminMessages.length === 0 ? (
+                <div className="p-6 sm:p-8 text-center">
+                  <p className="mono text-sm uppercase text-white/40 font-black">No pending live requests</p>
+                </div>
+              ) : (
+                pendingAdminMessages.map((message) => (
+                  <div key={message.id} className="p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 sm:gap-4">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="mono text-[10px] uppercase font-black px-2 py-1 rounded bg-white/10 text-white/80">{message.type}</span>
+                        <span className="mono text-[10px] uppercase font-black px-2 py-1 rounded bg-[#00f5a0]/15 text-[#00f5a0]">{message.channel}</span>
+                        <span className="mono text-[10px] uppercase text-white/40">
+                          {new Date(message.timestamp).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="mono text-xs sm:text-sm uppercase text-white/70 mt-2">FROM: {message.sender}</p>
+                      <p className="text-sm sm:text-base text-white mt-2 break-words">{message.payload.text}</p>
+                      {(message.payload.manualLocation || message.payload.location) && (
+                        <p className="mono text-[10px] sm:text-xs uppercase text-white/50 mt-2 tracking-wide">
+                          Spatial_Anchor: {message.payload.manualLocation || 'GPS SIGNAL_ATTACHED'}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => markMessageFulfilled(message.id)}
+                      className="px-4 py-2 rounded-xl mono text-xs font-black uppercase tracking-wide bg-blue-500/20 border border-blue-400/40 text-blue-300 hover:bg-blue-500/30 transition-all shrink-0"
+                    >
+                      Mark Fulfilled
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!isInitialized) {
     return (
@@ -420,7 +1011,7 @@ const App: React.FC = () => {
                   <span className="mono text-[8px] sm:text-[9px] text-white/20 font-bold uppercase">Grid_S04</span>
                 </div>
                 <div className="bg-white/[0.02] border border-white/5 rounded-xl sm:rounded-2xl md:rounded-[2.5rem] p-3 sm:p-4 md:p-6 space-y-4 sm:space-y-5 md:space-y-6 tactical-border">
-                  {SECTOR_VITALS.map((vital, idx) => (
+                  {effectiveSectorVitals.map((vital, idx) => (
                     <div key={idx} className="space-y-2 sm:space-y-3">
                       <div className="flex justify-between items-center mono text-[9px] sm:text-[10px] md:text-[11px]">
                         <span className="text-white/70 font-black tracking-tight uppercase truncate pr-2">{vital.label}</span>
@@ -440,7 +1031,7 @@ const App: React.FC = () => {
                   <span className="mono text-[8px] sm:text-[9px] md:text-[10px] text-white/40 uppercase font-black tracking-widest">Facility_Manifest</span>
                 </div>
                 <div className="space-y-2 sm:space-y-3">
-                  {NEARBY_FACILITIES.map((fac, idx) => (
+                  {effectiveFacilities.map((fac, idx) => (
                     <div key={idx} className="group p-3 sm:p-4 bg-white/[0.02] border border-white/5 rounded-xl sm:rounded-2xl flex items-center justify-between hover:bg-white/5 transition-all cursor-default">
                       <div className="flex items-center gap-2 sm:gap-3 md:gap-4 min-w-0 flex-1">
                         <div className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 bg-white/5 rounded-lg sm:rounded-xl flex items-center justify-center mono text-[10px] sm:text-xs text-white/40 font-black shrink-0">
@@ -461,26 +1052,81 @@ const App: React.FC = () => {
               </section>
             </>
           ) : (
-            <section className="space-y-3 sm:space-y-4">
-              <div className="flex items-center justify-between px-1">
-                <span className="mono text-[8px] sm:text-[9px] md:text-[10px] text-white/40 uppercase font-black tracking-widest">Live_Operations</span>
-                <span className="mono text-[8px] sm:text-[9px] text-[#00f5a0] font-bold uppercase">Realtime</span>
-              </div>
-              <div className="bg-white/[0.02] border border-white/5 rounded-xl sm:rounded-2xl md:rounded-[2.5rem] p-4 sm:p-5 md:p-6 space-y-3 sm:space-y-4">
-                <div className="flex items-center justify-between mono text-[10px] sm:text-[11px] uppercase">
-                  <span className="text-white/40 font-black">Total_Messages</span>
-                  <span className="text-white font-black">{messages.length}</span>
+            <>
+              <section className="space-y-3 sm:space-y-4">
+                <div className="flex items-center justify-between px-1">
+                  <span className="mono text-[8px] sm:text-[9px] md:text-[10px] text-white/40 uppercase font-black tracking-widest">Live_Operations</span>
+                  <span className="mono text-[8px] sm:text-[9px] text-[#00f5a0] font-bold uppercase">Realtime</span>
                 </div>
-                <div className="flex items-center justify-between mono text-[10px] sm:text-[11px] uppercase">
-                  <span className="text-white/40 font-black">Active_Alerts</span>
-                  <span className={`font-black ${activeSOSCount > 0 ? 'text-red-500' : 'text-white'}`}>{activeSOSCount}</span>
+                <div className="bg-white/[0.02] border border-white/5 rounded-xl sm:rounded-2xl md:rounded-[2.5rem] p-4 sm:p-5 md:p-6 space-y-3 sm:space-y-4">
+                  <div className="flex items-center justify-between mono text-[10px] sm:text-[11px] uppercase">
+                    <span className="text-white/40 font-black">Total_Messages</span>
+                    <span className="text-white font-black">{messages.length}</span>
+                  </div>
+                  <div className="flex items-center justify-between mono text-[10px] sm:text-[11px] uppercase">
+                    <span className="text-white/40 font-black">Active_Alerts</span>
+                    <span className={`font-black ${activeSOSCount > 0 ? 'text-red-500' : 'text-white'}`}>{activeSOSCount}</span>
+                  </div>
+                  <div className="flex items-center justify-between mono text-[10px] sm:text-[11px] uppercase">
+                    <span className="text-white/40 font-black">Online_Peers</span>
+                    <span className="text-blue-400 font-black">{onlinePeersCount}</span>
+                  </div>
                 </div>
-                <div className="flex items-center justify-between mono text-[10px] sm:text-[11px] uppercase">
-                  <span className="text-white/40 font-black">Online_Peers</span>
-                  <span className="text-blue-400 font-black">{onlinePeersCount}</span>
-                </div>
-              </div>
-            </section>
+              </section>
+
+              {hasLiveIntelPanels && (
+                <>
+                  {adminSectorVitals.length > 0 && (
+                    <section className="space-y-3 sm:space-y-4">
+                      <div className="flex items-center justify-between px-1">
+                        <span className="mono text-[8px] sm:text-[9px] md:text-[10px] text-white/40 uppercase font-black tracking-widest">Sector_Telemetry</span>
+                        <span className="mono text-[8px] sm:text-[9px] text-white/20 font-bold uppercase">Grid_S04</span>
+                      </div>
+                      <div className="bg-white/[0.02] border border-white/5 rounded-xl sm:rounded-2xl md:rounded-[2.5rem] p-3 sm:p-4 md:p-6 space-y-4 sm:space-y-5 md:space-y-6 tactical-border">
+                        {effectiveSectorVitals.map((vital, idx) => (
+                          <div key={idx} className="space-y-2 sm:space-y-3">
+                            <div className="flex justify-between items-center mono text-[9px] sm:text-[10px] md:text-[11px]">
+                              <span className="text-white/70 font-black tracking-tight uppercase truncate pr-2">{vital.label}</span>
+                              <span style={{ color: vital.color }} className="font-black text-[8px] sm:text-[9px] md:text-[10px] tracking-widest shrink-0">{vital.status}</span>
+                            </div>
+                            <div className="h-1.5 sm:h-2 w-full bg-white/5 rounded-full overflow-hidden p-[1px]">
+                              <div className="h-full rounded-full transition-all duration-1000 shadow-[0_0_15px_currentColor]" style={{ width: `${vital.value}%`, backgroundColor: vital.color }}></div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+
+                  {adminFacilities.length > 0 && (
+                    <section className="space-y-3 sm:space-y-4">
+                      <div className="flex items-center justify-between px-1">
+                        <span className="mono text-[8px] sm:text-[9px] md:text-[10px] text-white/40 uppercase font-black tracking-widest">Facility_Manifest</span>
+                      </div>
+                      <div className="space-y-2 sm:space-y-3">
+                        {effectiveFacilities.map((fac, idx) => (
+                          <div key={idx} className="group p-3 sm:p-4 bg-white/[0.02] border border-white/5 rounded-xl sm:rounded-2xl flex items-center justify-between hover:bg-white/5 transition-all cursor-default">
+                            <div className="flex items-center gap-2 sm:gap-3 md:gap-4 min-w-0 flex-1">
+                              <div className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 bg-white/5 rounded-lg sm:rounded-xl flex items-center justify-center mono text-[10px] sm:text-xs text-white/40 font-black shrink-0">
+                                {fac.type[0]}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="mono text-[8px] sm:text-[9px] text-white/20 uppercase font-black mb-0.5 sm:mb-1">{fac.type}</div>
+                                <div className="mono text-[10px] sm:text-xs text-white font-black tracking-tight truncate">{fac.name}</div>
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0 ml-2">
+                              <div className="mono text-[9px] sm:text-[10px] text-white/40 font-bold mb-0.5 sm:mb-1">{fac.dist}</div>
+                              <div className={`mono text-[8px] sm:text-[9px] font-black tracking-widest ${fac.status === 'ACTIVE' ? 'text-[#00f5a0]' : 'text-red-500'}`}>{fac.status}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+                </>
+              )}
+            </>
           )}
 
         </div>
@@ -537,22 +1183,38 @@ const App: React.FC = () => {
                <button
                  type="button"
                  onClick={() => setIsModeMenuOpen((prev) => !prev)}
-                 className="w-10 h-10 sm:w-12 sm:h-12 md:w-14 md:h-14 rounded-xl sm:rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center hover:bg-[#00f5a0]/10 transition-all group cursor-pointer shrink-0"
+                 className={`w-10 h-10 sm:w-12 sm:h-12 md:w-14 md:h-14 rounded-xl sm:rounded-2xl border flex items-center justify-center transition-all group cursor-pointer shrink-0 ${
+                   isLightTheme
+                     ? 'bg-white/70 border-[#0811241f] hover:bg-emerald-100/70'
+                     : 'bg-white/5 border-white/10 hover:bg-[#00f5a0]/10'
+                 }`}
                  aria-label="Open mode menu"
                  aria-haspopup="menu"
                  aria-expanded={isModeMenuOpen}
                >
-                  <svg className="w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8 fill-white/40 group-hover:fill-[#00f5a0] transition-colors" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+                  <svg className={`w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8 transition-colors ${isLightTheme ? 'fill-[#22314b]/70 group-hover:fill-[#0f7f5e]' : 'fill-white/40 group-hover:fill-[#00f5a0]'}`} viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
                </button>
                {isModeMenuOpen && (
-                 <div className="absolute right-0 mt-2 w-44 bg-[#0b111a]/95 border border-white/10 rounded-xl p-1.5 shadow-2xl z-[80]" role="menu">
+                 <div className={`absolute right-0 mt-2 w-44 rounded-xl p-1.5 shadow-2xl z-[80] ${
+                   isLightTheme
+                     ? 'bg-white/95 border border-[#0811241f]'
+                     : 'bg-[#0b111a]/95 border border-white/10'
+                 }`} role="menu">
                    <button
                      type="button"
                      onClick={() => {
                        setAppMode('demo');
                        setIsModeMenuOpen(false);
                      }}
-                     className={`w-full text-left px-3 py-2.5 rounded-lg mono text-[11px] font-black uppercase tracking-[0.12em] transition-all ${appMode === 'demo' ? 'bg-amber-400/20 text-amber-300' : 'text-white/70 hover:bg-white/10 hover:text-white'}`}
+                     className={`w-full text-left px-3 py-2.5 rounded-lg mono text-[11px] font-black uppercase tracking-[0.12em] transition-all ${
+                       appMode === 'demo'
+                         ? isLightTheme
+                           ? 'bg-amber-400/25 text-amber-900'
+                           : 'bg-amber-400/20 text-amber-300'
+                         : isLightTheme
+                           ? 'text-[#22314b]/80 hover:bg-[#0811240f] hover:text-[#081124]'
+                           : 'text-white/70 hover:bg-white/10 hover:text-white'
+                     }`}
                      role="menuitem"
                    >
                      Demo Mode
@@ -563,7 +1225,15 @@ const App: React.FC = () => {
                        setAppMode('live');
                        setIsModeMenuOpen(false);
                      }}
-                     className={`w-full text-left px-3 py-2.5 rounded-lg mono text-[11px] font-black uppercase tracking-[0.12em] transition-all ${appMode === 'live' ? 'bg-[#00f5a0]/20 text-[#00f5a0]' : 'text-white/70 hover:bg-white/10 hover:text-white'}`}
+                     className={`w-full text-left px-3 py-2.5 rounded-lg mono text-[11px] font-black uppercase tracking-[0.12em] transition-all ${
+                       appMode === 'live'
+                         ? isLightTheme
+                           ? 'bg-emerald-300/35 text-emerald-900'
+                           : 'bg-[#00f5a0]/20 text-[#00f5a0]'
+                         : isLightTheme
+                           ? 'text-[#22314b]/80 hover:bg-[#0811240f] hover:text-[#081124]'
+                           : 'text-white/70 hover:bg-white/10 hover:text-white'
+                     }`}
                      role="menuitem"
                    >
                      Live Mode
@@ -673,7 +1343,10 @@ const App: React.FC = () => {
                         <input
                           type="text"
                           value={manualLocation}
-                          onChange={(e) => setManualLocation(e.target.value)}
+                          onChange={(e) => {
+                            locationEditedRef.current = true;
+                            setManualLocation(e.target.value);
+                          }}
                           placeholder="DEFINE SECTOR / LANDMARK / GRID LOC"
                           className={`w-full bg-white/[0.04] border border-white/10 p-2.5 sm:p-3 pt-6 sm:pt-7 md:pt-8 px-4 sm:px-6 md:px-8 rounded-xl sm:rounded-2xl mono text-[10px] sm:text-xs text-white focus:outline-none focus:ring-2 sm:focus:ring-4 transition-all uppercase tracking-[0.3em] sm:tracking-[0.4em] font-black shadow-inner placeholder-white/5 compose-field ${isLightTheme ? 'h-12 sm:h-14 md:h-[3.6rem]' : ''}`}
                           style={{ borderColor: manualLocation.trim() ? `${currentConfig.color}99` : 'rgba(255,255,255,0.1)', ringColor: `${currentConfig.color}22` }}
