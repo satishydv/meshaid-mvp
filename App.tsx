@@ -626,6 +626,23 @@ const App: React.FC = () => {
             <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <button
                 type="button"
+                onClick={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+                className="theme-toggle"
+                aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+              >
+                <svg className="w-4 h-4 sm:w-5 sm:h-5 fill-current" viewBox="0 0 24 24">
+                  {theme === 'dark' ? (
+                    <path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zM1 13h3v-2H1v2zm10-9h2V1h-2v3zm7.45 1.46l1.41-1.41-1.79-1.8-1.42 1.42 1.8 1.79zM17.24 19.16l1.8 1.79 1.41-1.41-1.79-1.8-1.42 1.42zM20 11v2h3v-2h-3zM11 20h2v3h-2v-3zM4.96 19.95l1.79-1.8-1.41-1.41-1.8 1.79 1.42 1.42zM12 6a6 6 0 100 12 6 6 0 000-12z" />
+                  ) : (
+                    <path d="M12.1 2.53A9 9 0 1021.47 13 7.5 7.5 0 0112.1 2.53z" />
+                  )}
+                </svg>
+                <span className="mono text-[9px] sm:text-[10px] font-black uppercase tracking-wider">
+                  {theme === 'dark' ? 'LIGHT' : 'DARK'}
+                </span>
+              </button>
+              <button
+                type="button"
                 onClick={exportLiveMessagesCsv}
                 className="px-4 py-2 rounded-xl mono text-xs font-black uppercase tracking-wide bg-[#00f5a0] text-black hover:brightness-110 transition-all"
               >
