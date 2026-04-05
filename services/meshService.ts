@@ -219,6 +219,11 @@ class MeshService {
   }
 
   private getRelaySocketUrl() {
+    const configuredRelayUrl = import.meta.env.VITE_MESH_RELAY_URL?.trim();
+    if (configuredRelayUrl) {
+      return configuredRelayUrl;
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname;
     return `${protocol}//${host}:${this.RELAY_PORT}${this.RELAY_PATH}`;
